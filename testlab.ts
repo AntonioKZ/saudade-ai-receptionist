@@ -8,19 +8,12 @@ export type TestSession = {
   nextAction?: string;
 };
 
+const opening = 'Buongiorno, ha chiamato Saudade Viaggi. Sono l’assistente virtuale dell’agenzia. Come posso aiutarla?';
+
 const scenarios = {
-  zanzibar_quote: {
-    title: 'Nuovo preventivo Zanzibar',
-    opening: 'Buongiorno, ha chiamato Saudade Viaggi. Sono l’assistente virtuale dell’agenzia. Come posso aiutarla?'
-  },
-  human_operator: {
-    title: 'Richiesta operatore',
-    opening: 'Buongiorno, ha chiamato Saudade Viaggi. Sono l’assistente virtuale dell’agenzia. Come posso aiutarla?'
-  },
-  complaint: {
-    title: 'Reclamo',
-    opening: 'Buongiorno, ha chiamato Saudade Viaggi. Sono l’assistente virtuale dell’agenzia. Come posso aiutarla?'
-  }
+  zanzibar_quote: { title: 'Nuovo preventivo viaggio', opening },
+  human_operator: { title: 'Richiesta operatore', opening },
+  complaint: { title: 'Reclamo', opening }
 } as const;
 
 export function listTestScenarios() {
@@ -29,12 +22,7 @@ export function listTestScenarios() {
 
 export function startTestSession(scenario = 'zanzibar_quote'): TestSession {
   const selected = scenarios[scenario as keyof typeof scenarios] || scenarios.zanzibar_quote;
-  return {
-    scenario,
-    step: 0,
-    data: {},
-    messages: [{ role: 'assistant', text: selected.opening }]
-  };
+  return { scenario, step: 0, data: {}, messages: [{ role: 'assistant', text: selected.opening }] };
 }
 
 function extract(text: string, patterns: RegExp[]) {
@@ -45,87 +33,158 @@ function extract(text: string, patterns: RegExp[]) {
   return undefined;
 }
 
-function zanzibarReply(session: TestSession, input: string) {
+function titleCase(s: string) {
+  return s.trim().replace(/\s+/g, ' ').replace(/(^|\s)[a-zà-ÿ]/g, x => x.toUpperCase());
+}
+
+function extractDestination(text: string) {
+  const cleaned = text.replace(/[,.!?]/g, ' ');
+  const m = cleaned.match(/(?:viaggio|vacanza|preventiv[oi]|andare|partire|volo|weekend)\s+(?:per|a|ad|verso)\s+([A-Za-zÀ-ÿ' -]{2,40})/i)
+    || cleaned.match(/(?:per|a|ad|verso)\s+([A-Za-zÀ-ÿ' -]{2,40})$/i);
+  if (!m) return undefined;
+  return titleCase(m[1].replace(/\b(?:nel|nella|durante|per|a|ad)\b.*$/i, '').trim());
+}
+
+function extractPeriod(text: string) {
+  const l = text.toLowerCase();
+  const known = [
+    ['natale', 'periodo di Natale'], ['capodanno', 'Capodanno'], ['pasqua', 'Pasqua'],
+    ['estate', 'estate'], ['agosto', 'agosto'], ['luglio', 'luglio'], ['giugno', 'giugno'],
+    ['settembre', 'settembre'], ['ottobre', 'ottobre'], ['novembre', 'novembre'], ['dicembre', 'dicembre'],
+    ['gennaio', 'gennaio'], ['febbraio', 'febbraio'], ['marzo', 'marzo'], ['aprile', 'aprile'], ['maggio', 'maggio']
+  ] as const;
+  for (const [needle, value] of known) if (l.includes(needle)) return value;
+  const date = text.match(/\b(?:dal|il|intorno al|verso il)?\s*(\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/i);
+  return date?.[1];
+}
+
+function isFlexible(text: string) {
+  return /sto ancora valutando|ancora valutando|non ho.*periodo|non so ancora|flessibil|indicativ|più o meno|circa/.test(text.toLowerCase());
+}
+
+function isNo(text: string) { return /^(no|nessun|nessuno|non ci sono)/i.test(text.trim()); }
+function isYes(text: string) { return /^(s[iì]|certo|certamente|va bene|ok|confermo)/i.test(text.trim()); }
+
+function travelReply(session: TestSession, input: string) {
   const t = input.trim();
   const l = t.toLowerCase();
+
   if (/operatore|persona|qualcuno dell.?agenzia/.test(l)) {
     session.done = true;
     session.nextAction = 'Trasferire a operatore; se non disponibile, creare callback.';
-    return 'Certamente. Posso provare a trasferirla a un operatore. Se nessuno fosse disponibile, lascio la richiesta già raccolta così non dovrà ripetere tutto.';
+    return 'Certamente. Posso provare a trasferirla a un operatore. Se nessuno fosse disponibile, registro la richiesta così non dovrà ripetere tutto.';
+  }
+  if (/reclam|lament|problema con una prenotazione/.test(l)) {
+    session.done = true;
+    session.nextAction = 'Escalation prioritaria a operatore umano.';
+    return 'Capisco. Per un reclamo preferisco coinvolgere subito un operatore. Registro il motivo e richiedo una presa in carico prioritaria.';
   }
   if (/vaccin|profilassi/.test(l)) {
     session.data.health_question = true;
-    return 'Posso darle solo informazioni generali. Per vaccinazioni e profilassi è opportuno verificare fonti ufficiali aggiornate e un centro di medicina dei viaggi. Aggiungo la domanda alla richiesta.';
+    return 'Per vaccinazioni e profilassi preferisco non improvvisare: la verifica va fatta su fonti ufficiali aggiornate. Segno la domanda nella richiesta. Intanto proseguiamo con i dati del viaggio.';
   }
   if (/passaport|visto|document/.test(l)) {
     session.data.documents_question = true;
-    return 'È un requisito che preferisco verificare su fonti ufficiali aggiornate prima di darle una risposta definitiva. Lo aggiungo alla richiesta.';
-  }
-  if (/quanto|prezzo|costa|4000|4\.000/.test(l) && session.step >= 5) {
-    return 'Preferisco non indicarle un prezzo non verificato. Tariffe e disponibilità cambiano; posso registrare il budget e far verificare una proposta reale dal consulente.';
+    return 'Anche i requisiti documentali vanno verificati su fonti ufficiali aggiornate. Segno la domanda e proseguiamo con il preventivo.';
   }
 
-  switch (session.step) {
-    case 0:
-      session.data.destination = /zanzibar/.test(l) ? 'Zanzibar' : t;
-      session.step = 1;
-      return 'Certamente. Ha già in mente un periodo oppure sta ancora valutando?';
-    case 1:
-      session.data.period = t;
+  if (session.step === 0) {
+    session.data.destination = extractDestination(t) || (/zanzibar/.test(l) ? 'Zanzibar' : undefined);
+    if (!session.data.destination) {
+      session.step = 0;
+      return 'Certamente. Per quale destinazione desidera ricevere un preventivo?';
+    }
+    const p = extractPeriod(t);
+    if (p) session.data.period = p;
+    if (isFlexible(t)) session.data.period_flexible = true;
+    if (session.data.period) {
       session.step = 2;
-      return 'Perfetto. Indicativamente quanti giorni vorreste rimanere?';
-    case 2:
-      session.data.duration = t;
-      session.step = 3;
-      return 'Va bene. Da quale aeroporto preferireste partire?';
-    case 3:
-      session.data.departure_airport = /catania/.test(l) ? 'Catania' : t;
-      session.data.direct_flight = /dirett/.test(l);
-      session.step = 4;
-      return 'Ricevuto. Quante persone viaggerebbero?';
-    case 4:
-      session.data.travelers = t;
-      session.step = 5;
-      return 'Perfetto. Ci sono bambini o ragazzi? Se sì, quanti anni avranno alla data del viaggio?';
-    case 5:
-      session.data.children = t;
-      session.step = 6;
-      return 'Avete già una zona preferita di Zanzibar oppure volete un consiglio dell’agenzia?';
-    case 6:
-      session.data.area = /nungwi/.test(l) ? 'Nungwi' : t;
-      session.step = 7;
-      return 'Per la struttura cercate soprattutto un resort sul mare? Avete una preferenza per il trattamento?';
-    case 7:
-      session.data.hotel_preferences = t;
-      session.step = 8;
-      return 'Avete un budget indicativo complessivo?';
-    case 8:
-      session.data.budget = t;
-      session.step = 9;
-      return 'Perfetto. Il budget è un limite rigido oppure possiamo valutare qualcosa in più se offre un vantaggio significativo?';
-    case 9:
-      session.data.budget_flexibility = t;
-      session.step = 10;
-      return `Riassumo: ${session.data.destination || 'Zanzibar'}, ${session.data.period}, ${session.data.duration}, partenza da ${session.data.departure_airport}, ${session.data.travelers}, zona ${session.data.area}, preferenze ${session.data.hotel_preferences}, budget ${session.data.budget}. È corretto?`;
-    case 10:
-      session.data.confirmed = !/no|sbagli/.test(l);
-      session.step = 11;
-      return 'Perfetto. Per preparare la richiesta mi servono il suo nome e un recapito. Se sta simulando, può usare dati fittizi.';
-    case 11:
-      session.data.name = extract(t, [/mi chiamo\s+(.+)/i, /sono\s+(.+)/i]) || t;
-      session.step = 12;
-      return 'Posso utilizzare il numero da cui sta chiamando per essere ricontattato sulla richiesta?';
-    case 12:
-      session.data.contact_ok = !/no/.test(l);
-      session.done = true;
-      session.nextAction = 'Creare lead e assegnare a consulente viaggi; verificare disponibilità e prezzo reale.';
-      session.summary = buildSummary(session);
-      return 'Perfetto. La richiesta è completa e la inoltro al consulente. Non inventerò prezzi o disponibilità: saranno verificati sui sistemi reali.';
-    default:
-      session.done = true;
-      session.summary = buildSummary(session);
-      return 'La simulazione è completata.';
+      return `Perfetto, ${session.data.destination} nel ${session.data.period}. Indicativamente quanti giorni vorrebbe rimanere?`;
+    }
+    session.step = 1;
+    return `Perfetto, ${session.data.destination}. Ha già in mente un periodo oppure sta ancora valutando?`;
   }
+
+  if (session.step === 1) {
+    const p = extractPeriod(t);
+    if (p) session.data.period = p;
+    if (isFlexible(t)) session.data.period_flexible = true;
+    if (!session.data.period) session.data.period = isFlexible(t) ? 'da definire' : t;
+    session.step = 2;
+    const flex = session.data.period_flexible ? ' con date ancora flessibili' : '';
+    return `Va bene, considero ${session.data.period}${flex}. Indicativamente quanti giorni vorrebbe rimanere?`;
+  }
+
+  if (session.step === 2) {
+    session.data.duration = t;
+    session.step = 3;
+    return 'Da quale aeroporto o città preferirebbe partire?';
+  }
+
+  if (session.step === 3) {
+    session.data.departure_airport = titleCase(t.replace(/^(da|partirei da|preferirei)\s+/i, ''));
+    session.step = 4;
+    return 'Quante persone viaggerebbero?';
+  }
+
+  if (session.step === 4) {
+    session.data.travelers = t;
+    session.step = 5;
+    return 'Ci sono bambini o ragazzi? Se sì, mi dica anche l’età prevista alla data del viaggio.';
+  }
+
+  if (session.step === 5) {
+    session.data.children = isNo(t) ? 'Nessuno' : t;
+    session.step = 6;
+    return `Per ${session.data.destination}, che tipo di sistemazione preferisce? Ad esempio hotel, B&B, appartamento o resort. Se non ha preferenze, va bene anche dirlo.`;
+  }
+
+  if (session.step === 6) {
+    session.data.hotel_preferences = t;
+    session.step = 7;
+    return 'Ha un budget indicativo complessivo per il viaggio? Se non lo ha ancora definito possiamo lasciarlo aperto.';
+  }
+
+  if (session.step === 7) {
+    session.data.budget = t;
+    session.step = 8;
+    return 'Ci sono altre preferenze importanti? Per esempio volo diretto, posizione centrale, colazione inclusa o particolari esigenze.';
+  }
+
+  if (session.step === 8) {
+    session.data.other_preferences = t;
+    session.step = 9;
+    return `Riassumo: destinazione ${session.data.destination}, periodo ${session.data.period}${session.data.period_flexible ? ' flessibile' : ''}, durata ${session.data.duration}, partenza da ${session.data.departure_airport}, viaggiatori ${session.data.travelers}, sistemazione ${session.data.hotel_preferences}, budget ${session.data.budget}. È corretto?`;
+  }
+
+  if (session.step === 9) {
+    if (!isYes(t) && /no|sbagli|corregg/.test(l)) {
+      session.step = 0;
+      session.data = {};
+      return 'Va bene, ripartiamo dai dati essenziali. Qual è la destinazione?';
+    }
+    session.data.confirmed = true;
+    session.step = 10;
+    return 'Perfetto. Per inoltrare la richiesta al consulente mi serve il suo nome. In questa simulazione può usare anche un nome fittizio.';
+  }
+
+  if (session.step === 10) {
+    session.data.name = extract(t, [/mi chiamo\s+(.+)/i, /sono\s+(.+)/i]) || t;
+    session.step = 11;
+    return 'Posso utilizzare il numero da cui sta chiamando per essere ricontattato sulla richiesta?';
+  }
+
+  if (session.step === 11) {
+    session.data.contact_ok = !/no/.test(l);
+    session.done = true;
+    session.nextAction = 'Creare lead e assegnare a consulente viaggi; verificare disponibilità, prezzi e condizioni reali.';
+    session.summary = buildSummary(session);
+    return 'Perfetto. Ho raccolto la richiesta e la inoltro al consulente, che verificherà disponibilità e prezzi reali prima di ricontattarla.';
+  }
+
+  session.done = true;
+  session.summary = buildSummary(session);
+  return 'La simulazione è completata.';
 }
 
 function genericReply(session: TestSession, input: string) {
@@ -141,7 +200,7 @@ function genericReply(session: TestSession, input: string) {
     session.summary = `Reclamo cliente: ${input}`;
     return 'Capisco. Trattandosi di un reclamo preferisco farla assistere da un operatore. Registro il motivo e richiedo una presa in carico prioritaria.';
   }
-  return zanzibarReply(session, input);
+  return travelReply(session, input);
 }
 
 export function continueTestSession(session: TestSession, input: string): TestSession {
@@ -159,14 +218,14 @@ function buildSummary(session: TestSession) {
   const rows = [
     d.name && `Cliente: ${d.name}`,
     d.destination && `Destinazione: ${d.destination}`,
-    d.period && `Periodo: ${d.period}`,
+    d.period && `Periodo: ${d.period}${d.period_flexible ? ' (flessibile)' : ''}`,
     d.duration && `Durata: ${d.duration}`,
     d.departure_airport && `Partenza: ${d.departure_airport}`,
     d.travelers && `Viaggiatori: ${d.travelers}`,
     d.children && `Bambini/ragazzi: ${d.children}`,
-    d.area && `Zona: ${d.area}`,
-    d.hotel_preferences && `Preferenze struttura: ${d.hotel_preferences}`,
+    d.hotel_preferences && `Sistemazione: ${d.hotel_preferences}`,
     d.budget && `Budget: ${d.budget}`,
+    d.other_preferences && `Altre preferenze: ${d.other_preferences}`,
     d.health_question && 'Da verificare: informazioni sanitarie',
     d.documents_question && 'Da verificare: documenti/requisiti ingresso'
   ].filter(Boolean);
