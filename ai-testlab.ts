@@ -22,7 +22,8 @@ export async function aiTestTurn(session: TestSession, userMessage: string): Pro
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
     const updated = continueTestSession(structuredClone(session), userMessage);
-    const last = updated.messages.at(-1)?.text || 'Come posso aiutarla?';
+    const lastMessage = updated.messages[updated.messages.length - 1];
+    const last = lastMessage?.text || 'Come posso aiutarla?';
     return { reply: last, done: !!updated.done, summary: updated.summary, nextAction: updated.nextAction, data: updated.data, mode: 'fallback' };
   }
 
