@@ -59,3 +59,5 @@ OPENAI_TEST_MODEL=gpt-5.6-luna
 ## Sicurezza
 
 Non inserire API key o credenziali nel repository. Configurare i secret esclusivamente nelle Environment Variables di Vercel.
+
+<!-- deploy trigger 2026-08-29 -->
