@@ -42,7 +42,9 @@ function extractDestination(text: string) {
   const m = cleaned.match(/(?:viaggio|vacanza|preventiv[oi]|andare|partire|volo|weekend)\s+(?:per|a|ad|verso)\s+([A-Za-zÀ-ÿ' -]{2,40})/i)
     || cleaned.match(/(?:per|a|ad|verso)\s+([A-Za-zÀ-ÿ' -]{2,40})$/i);
   if (!m) return undefined;
-  return titleCase(m[1].replace(/\b(?:nel|nella|durante|per|a|ad)\b.*$/i, '').trim());
+  const raw = m[1].replace(/\b(?:nel|nella|durante|per|a|ad)\b.*$/i, '').trim();
+  if (/^(una?|sette|7|settimana|giorn[oi]|natale|capodanno|estate|agosto|luglio)$/i.test(raw)) return undefined;
+  return titleCase(raw);
 }
 
 function extractPeriod(text: string) {
@@ -56,6 +58,15 @@ function extractPeriod(text: string) {
   for (const [needle, value] of known) if (l.includes(needle)) return value;
   const date = text.match(/\b(?:dal|il|intorno al|verso il)?\s*(\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?)\b/i);
   return date?.[1];
+}
+
+function extractDuration(text: string) {
+  const l = text.toLowerCase().trim();
+  if (/una settimana|1 settimana/.test(l)) return '7 giorni';
+  if (/due settimane|2 settimane/.test(l)) return '14 giorni';
+  const days = l.match(/\b(\d{1,2}|uno|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|undici|dodici|tredici|quattordici)\s+giorn[oi]\b/i);
+  if (days) return days[0];
+  return text.trim();
 }
 
 function isFlexible(text: string) {
@@ -79,24 +90,14 @@ function travelReply(session: TestSession, input: string) {
     session.nextAction = 'Escalation prioritaria a operatore umano.';
     return 'Capisco. Per un reclamo preferisco coinvolgere subito un operatore. Registro il motivo e richiedo una presa in carico prioritaria.';
   }
-  if (/vaccin|profilassi/.test(l)) {
-    session.data.health_question = true;
-    return 'Per vaccinazioni e profilassi preferisco non improvvisare: la verifica va fatta su fonti ufficiali aggiornate. Segno la domanda nella richiesta. Intanto proseguiamo con i dati del viaggio.';
-  }
-  if (/passaport|visto|document/.test(l)) {
-    session.data.documents_question = true;
-    return 'Anche i requisiti documentali vanno verificati su fonti ufficiali aggiornate. Segno la domanda e proseguiamo con il preventivo.';
-  }
 
   if (session.step === 0) {
-    session.data.destination = extractDestination(t) || (/zanzibar/.test(l) ? 'Zanzibar' : undefined);
-    if (!session.data.destination) {
-      session.step = 0;
-      return 'Certamente. Per quale destinazione desidera ricevere un preventivo?';
-    }
+    session.data.destination ||= extractDestination(t) || (/zanzibar/.test(l) ? 'Zanzibar' : undefined);
     const p = extractPeriod(t);
-    if (p) session.data.period = p;
+    if (p && !session.data.period) session.data.period = p;
     if (isFlexible(t)) session.data.period_flexible = true;
+
+    if (!session.data.destination) return 'Certamente. Per quale destinazione desidera ricevere un preventivo?';
     if (session.data.period) {
       session.step = 2;
       return `Perfetto, ${session.data.destination} nel ${session.data.period}. Indicativamente quanti giorni vorrebbe rimanere?`;
@@ -111,14 +112,13 @@ function travelReply(session: TestSession, input: string) {
     if (isFlexible(t)) session.data.period_flexible = true;
     if (!session.data.period) session.data.period = isFlexible(t) ? 'da definire' : t;
     session.step = 2;
-    const flex = session.data.period_flexible ? ' con date ancora flessibili' : '';
-    return `Va bene, considero ${session.data.period}${flex}. Indicativamente quanti giorni vorrebbe rimanere?`;
+    return `Va bene, considero ${session.data.period}${session.data.period_flexible ? ' con date ancora flessibili' : ''}. Indicativamente quanti giorni vorrebbe rimanere?`;
   }
 
   if (session.step === 2) {
-    session.data.duration = t;
+    session.data.duration = extractDuration(t);
     session.step = 3;
-    return 'Da quale aeroporto o città preferirebbe partire?';
+    return `Perfetto, ${session.data.duration}. Da quale aeroporto o città preferirebbe partire?`;
   }
 
   if (session.step === 3) {
@@ -136,7 +136,7 @@ function travelReply(session: TestSession, input: string) {
   if (session.step === 5) {
     session.data.children = isNo(t) ? 'Nessuno' : t;
     session.step = 6;
-    return `Per ${session.data.destination}, che tipo di sistemazione preferisce? Ad esempio hotel, B&B, appartamento o resort. Se non ha preferenze, va bene anche dirlo.`;
+    return `Per ${session.data.destination}, che tipo di sistemazione preferisce? Ad esempio hotel, B&B o appartamento.`;
   }
 
   if (session.step === 6) {
@@ -148,7 +148,7 @@ function travelReply(session: TestSession, input: string) {
   if (session.step === 7) {
     session.data.budget = t;
     session.step = 8;
-    return 'Ci sono altre preferenze importanti? Per esempio volo diretto, posizione centrale, colazione inclusa o particolari esigenze.';
+    return 'Ci sono altre preferenze importanti? Per esempio posizione centrale, colazione inclusa o particolari esigenze.';
   }
 
   if (session.step === 8) {
@@ -159,9 +159,7 @@ function travelReply(session: TestSession, input: string) {
 
   if (session.step === 9) {
     if (!isYes(t) && /no|sbagli|corregg/.test(l)) {
-      session.step = 0;
-      session.data = {};
-      return 'Va bene, ripartiamo dai dati essenziali. Qual è la destinazione?';
+      return 'Va bene. Mi dica quale dato vuole correggere: destinazione, periodo, durata, partenza, viaggiatori, sistemazione o budget.';
     }
     session.data.confirmed = true;
     session.step = 10;
@@ -225,9 +223,7 @@ function buildSummary(session: TestSession) {
     d.children && `Bambini/ragazzi: ${d.children}`,
     d.hotel_preferences && `Sistemazione: ${d.hotel_preferences}`,
     d.budget && `Budget: ${d.budget}`,
-    d.other_preferences && `Altre preferenze: ${d.other_preferences}`,
-    d.health_question && 'Da verificare: informazioni sanitarie',
-    d.documents_question && 'Da verificare: documenti/requisiti ingresso'
+    d.other_preferences && `Altre preferenze: ${d.other_preferences}`
   ].filter(Boolean);
   return rows.join('\n') || 'Simulazione completata.';
 }
